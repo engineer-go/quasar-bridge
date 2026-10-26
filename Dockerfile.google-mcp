@@ -1,0 +1,24 @@
+FROM python:3.13-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --user-group --create-home --home-dir /home/mcp mcp
+
+RUN pip install --no-cache-dir workspace-mcp==2.2.1
+
+ENV HOME=/home/mcp \
+    PYTHONDONTWRITEBYTECODE=1 \
+    WORKSPACE_MCP_HOST=0.0.0.0 \
+    WORKSPACE_MCP_PORT=8110 \
+    WORKSPACE_MCP_BASE_URI=http://localhost \
+    GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8110/oauth2callback \
+    WORKSPACE_MCP_CREDENTIALS_DIR=/data/credentials \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    MCP_ENABLE_OAUTH21=false
+
+USER 1000:1000
+EXPOSE 8110
+ENTRYPOINT ["workspace-mcp"]
+CMD ["--transport", "streamable-http", "--permissions", "gmail:drafts", "calendar:full", "--disabled-tools", "send_gmail_message", "--single-user"]

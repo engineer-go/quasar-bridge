@@ -1481,10 +1481,60 @@ anti-bot защитой или другим типом данных могут �
 локальные процессы **stdio**. Клиент реализован на официальном
 [Go SDK MCP](https://github.com/modelcontextprotocol/go-sdk).
 
-### Пример: поиск через Parallel
+### Запуск Bridge и Google MCP через Docker Compose
+
+В репозитории есть Compose-стек с двумя контейнерами: `bridge` и локальным
+`google-mcp`. Для сборки Bridge используется Go из builder-образа, поэтому Go
+на хосте устанавливать не нужно. Удалённый Parallel MCP остаётся внешним HTTP
+сервером и не требует отдельного контейнера.
+
+Проверь, что `runtime.env` заполнен и содержит ключ OpenRouter и Google OAuth
+client ID/secret/аккаунт. Не публикуй его и не отправляй вывод `docker compose
+config`: Compose подставляет секреты в итоговую конфигурацию.
+
+Из корня проекта запусти оба сервиса:
+
+```bash
+docker compose --env-file runtime.env up -d --build
+docker compose --env-file runtime.env ps
+docker compose --env-file runtime.env logs -f --tail=80 bridge google-mcp
+```
+
+У обоих контейнеров включён `restart: unless-stopped`: Docker поднимет их после
+сбоя и перезапуска Docker daemon. MCP endpoint внутри сети Compose —
+`http://google-mcp:8110/mcp`; порт `8110` опубликован только на loopback хоста,
+чтобы OAuth callback `http://localhost:8110/oauth2callback` принимался с этого
+компьютера. OAuth credentials сохраняются в `private/google-mcp-credentials`,
+поэтому пересоздание контейнера не удаляет вход и не требует новой авторизации.
+Папка `private/google-mcp-home` сохраняет состояние и логи MCP.
+
+Проверка discovery инструментов из контейнера Bridge:
+
+```bash
+docker compose --env-file runtime.env exec bridge \
+  /usr/local/bin/quasar-bridge -config /app/config.json -check-mcp
+```
+
+Перезапустить сервисы после изменения кода или настроек:
+
+```bash
+docker compose --env-file runtime.env up -d --build --force-recreate
+```
+
+Перезапустить только Google MCP:
+
+```bash
+docker compose --env-file runtime.env restart google-mcp
+```
+
+Контейнер Bridge слушает `192.168.2.52:8444`, как текущая конфигурация станции.
+Не запускай одновременно host-скрипт `private/start-google-mcp.sh`: он занял бы
+тот же порт `8110`.
+
+### Пример: Google Workspace и поиск через Parallel
 
 Скопируйте [config.mcp.example.json](../config.mcp.example.json), задайте свои `llm_base_url` и `llm_model`,
-загрузите `runtime.env` и проверьте подключение:
+запустите Google MCP sidecar (если используете Google), загрузите `runtime.env` и проверьте подключение:
 
 ```sh
 cp config.mcp.example.json config.json
@@ -1495,11 +1545,27 @@ set +a
 ./bin/quasar-bridge -config config.json -check-mcp
 ```
 
-В примере включён [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)
+В примере включены [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)
 по адресу `https://search.parallel.ai/mcp` с инструментами `web_search` и
 `web_fetch`. На момент проверки этот endpoint работает без аккаунта и API-ключа;
 у сервиса есть ограничения бесплатного доступа. Подключение к нему не включается
 в обычном конфиге автоматически.
+
+Там же есть сервер `google` для Gmail и Google Calendar. Он подключается к
+отдельному `workspace-mcp`, который должен быть запущен на **том же хосте, что и
+Quasar Bridge**. В `runtime.env` укажите, например,
+`QUASAR_GOOGLE_MCP_URL=http://127.0.0.1:8110/mcp`. Если Bridge работает на
+колонке, `127.0.0.1` указывает на колонку: MCP-сервер тоже должен быть доступен
+с неё по этому адресу или по адресу хоста.
+
+OAuth выполняет сам `workspace-mcp`; Bridge подключается к уже авторизованному
+MCP endpoint и не запускает интерактивный Google вход. OAuth client ID/secret и
+адрес аккаунта нужны процессу Google MCP, не Quasar Bridge. Передавайте их
+защищённо в окружение этого процесса и ограничьте его каталог только нужными
+инструментами Gmail/Calendar. После запуска сервера выполните `-check-mcp`, чтобы
+увидеть фактический каталог доступных инструментов. В `config.observe.example.json`
+Google сервер присутствует с `disabled: true`: observe режим не вызывает MCP;
+для использования скопируйте hybrid MCP-пример и оставьте сервер включённым.
 
 Чтобы добавить сервер к существующему конфигу, дополните `assistant_tools`:
 
@@ -1556,8 +1622,9 @@ MCP-примере также добавлено правило для «най�
 
 Переменные задаются в локальном `runtime.env`. Для старого SSE endpoint явно
 укажите `"transport": "sse"`. HTTP redirects и переходы SSE на другой origin
-не допускаются; указывайте конечный URL. Интерактивные OAuth-входы, sampling и
-запросы MCP к пользователю сейчас не поддерживаются.
+не допускаются; указывайте конечный URL. Quasar Bridge не выполняет интерактивный
+OAuth-вход за MCP-сервер: подключайте внешний MCP endpoint, который сам завершает
+авторизацию. Sampling и запросы MCP к пользователю не поддерживаются.
 
 Для stdio сервер запускается **на том же хосте, где работает Go-прокси**:
 
@@ -1967,7 +2034,7 @@ sudo journalctl -u quasar-bridge -n 100 --no-pager
 | `403 forbidden` от Go | IP клиента в `allowed_ips`, в том числе адрес проверяющей машины |
 | TLS error / колонка не подключается | Доверие CA на колонке, SAN и hostname/IP URL, DNS, firewall, порт |
 | В журнале нет кадров после речи | Правильность `uniProxyUrl`, QUIC-обход и применение config после перезагрузки |
-| `401`/`403` от MCP или неизвестные tools | Полный Secret URL, загруженный `runtime.env`, совместимость набора `ha_*`; OAuth/Bearer для MCP клиент не выполняет |
+| `401`/`403` от MCP или неизвестные tools | Проверьте конечный URL, загруженный `runtime.env`, авторизацию и каталог инструментов на стороне MCP; OAuth flow выполняет внешний MCP-сервер |
 | `LLM returned HTTP 400` | Точный model ID, базовый URL с `/v1`, поддержку `response_format` и `chat_template_kwargs` вашим API |
 | Устройство не находится | Assist exposure, область, friendly name/aliases, состояние `unknown`/`unavailable` |
 | Команда прошла частично | Отдельные приборы вне группы, лимит действий, проверка остальных состояний в HA; не повторяйте весь запрос вслепую |

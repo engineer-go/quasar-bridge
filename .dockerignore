@@ -1,0 +1,15 @@
+.git
+.idea
+config*.json
+private
+runtime
+runtime.env
+runtime.env.*
+*.env
+bin
+backups
+outputs
+*.log
+*.jsonl
+__pycache__
+*.pyc

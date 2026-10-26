@@ -1,0 +1,57 @@
+services:
+  google-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.google-mcp
+    image: quasar-bridge-google-mcp:local
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      GOOGLE_OAUTH_CLIENT_ID: ${QUASAR_GOOGLE_OAUTH_CLIENT_ID:?Set QUASAR_GOOGLE_OAUTH_CLIENT_ID in runtime.env}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${QUASAR_GOOGLE_OAUTH_CLIENT_SECRET:?Set QUASAR_GOOGLE_OAUTH_CLIENT_SECRET in runtime.env}
+      USER_GOOGLE_EMAIL: ${QUASAR_GOOGLE_ACCOUNT:?Set QUASAR_GOOGLE_ACCOUNT in runtime.env}
+    volumes:
+      - ./private/google-mcp-credentials:/data/credentials
+      - ./private/google-mcp-home:/home/mcp
+    ports:
+      - "127.0.0.1:8110:8110"
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(s.connect_ex(('127.0.0.1',8110)))"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: quasar-bridge:local
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      google-mcp:
+        condition: service_healthy
+    environment:
+      QUASAR_LLM_API_KEY: ${QUASAR_LLM_API_KEY:?Set QUASAR_LLM_API_KEY in runtime.env}
+      QUASAR_GOOGLE_MCP_URL: http://google-mcp:8110/mcp
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./private/certs:/app/private/certs:ro
+      - ./runtime:/app/runtime
+    ports:
+      - "192.168.2.52:8444:8444"
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:8444/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
