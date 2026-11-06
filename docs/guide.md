@@ -1508,6 +1508,29 @@ docker compose --env-file runtime.env logs -f --tail=80 bridge google-mcp
 поэтому пересоздание контейнера не удаляет вход и не требует новой авторизации.
 Папка `private/google-mcp-home` сохраняет состояние и логи MCP.
 
+#### Повторная авторизация Google
+
+Access token истекает, а MCP обычно обновляет его автоматически по сохранённому
+refresh token. Если refresh token отозван или Google вернул `invalid_grant`,
+MCP попросит войти снова. Получи новую одноразовую ссылку из работающего сервера:
+
+```bash
+python3 scripts/google-mcp-auth-url.py
+```
+
+Открой выведенную ссылку в браузере **на этом же компьютере**, выбери нужный
+Google-аккаунт и подтверди доступы. Браузер вернётся на
+`http://localhost:8110/oauth2callback`; MCP сам сохранит новые access и refresh
+tokens в `private/google-mcp-credentials`. Скопируй URL, но не копируй токены:
+вручную переносить или добавлять их в `runtime.env` не нужно. Повтори команду —
+сообщение `list_calendars succeeded` подтвердит, что доступ восстановлен.
+Перезапуск контейнера для обновления токена не нужен.
+
+Статус контейнера `healthy` подтверждает только, что MCP слушает порт; он не
+проверяет действительность Google-токена. Для перезапуска контейнера используй
+`docker compose --env-file runtime.env restart google-mcp`. Старый host-скрипт,
+который ищет PID процесса на порту `8110`, не подходит: порт занят Docker.
+
 Проверка discovery инструментов из контейнера Bridge:
 
 ```bash
