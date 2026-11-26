@@ -1,6 +1,8 @@
 .git
 .idea
 config*.json
+!config.example.json
+!config.mcp.example.json
 private
 runtime
 runtime.env
