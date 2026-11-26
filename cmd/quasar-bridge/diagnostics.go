@@ -5,9 +5,7 @@ import (
 	_ "embed"
 	"encoding/json/v2"
 	"fmt"
-	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -21,6 +19,15 @@ var diagnosticsHTML string
 //go:embed diagnostics.js
 var diagnosticsJS string
 
+//go:embed diagnostics_routing.js
+var routingJS string
+
+//go:embed diagnostics_account.js
+var accountJS string
+
+//go:embed diagnostics_theme.js
+var themeJS string
+
 //go:embed diagnostics.css
 var diagnosticsCSS string
 
@@ -33,6 +40,7 @@ type diagnosticLog struct {
 	cursor  int64
 	run     string
 	partial bool
+	packets diagnosticPackets
 }
 
 func newDiagnosticLog(limit int) *diagnosticLog {
@@ -92,40 +100,33 @@ func (l *diagnosticLog) snapshot(after int64) diagnosticSnapshot {
 }
 
 func localDiagnostics(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		peer, _, err := net.SplitHostPort(r.RemoteAddr)
-		ip, parseErr := netip.ParseAddr(peer)
-		host := r.Host
-		if name, _, err := net.SplitHostPort(host); err == nil {
-			host = name
-		}
-		hostIP, _ := netip.ParseAddr(host)
-		if err != nil || parseErr != nil || !ip.IsLoopback() || (host != "localhost" && !hostIP.IsLoopback()) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			http.Error(w, "Diagnostics require localhost access through an SSH tunnel.", http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
-		next(w, r)
-	}
+	return diagnosticsAccess(nil, next)
 }
 
-func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() map[string]any) {
-	mux.HandleFunc("GET /diagnostics", localDiagnostics(func(w http.ResponseWriter, r *http.Request) {
+func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() map[string]any, network ...func() bool) {
+	var access func() bool
+	if len(network) > 0 {
+		access = network[0]
+	}
+	guard := func(next http.HandlerFunc) http.HandlerFunc { return diagnosticsAccess(access, next) }
+	mux.HandleFunc("GET /diagnostics", guard(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/diagnostics/", http.StatusTemporaryRedirect)
 	}))
 	for _, asset := range []struct{ path, contentType, body string }{
 		{"/diagnostics/{$}", "text/html; charset=utf-8", diagnosticsHTML},
 		{"/diagnostics/app.js", "text/javascript; charset=utf-8", diagnosticsJS},
+		{"/diagnostics/routing.js", "text/javascript; charset=utf-8", routingJS},
+		{"/diagnostics/account.js", "text/javascript; charset=utf-8", accountJS},
+		{"/diagnostics/callback.js", "text/javascript; charset=utf-8", callbackJS},
+		{"/diagnostics/theme.js", "text/javascript; charset=utf-8", themeJS},
 		{"/diagnostics/app.css", "text/css; charset=utf-8", diagnosticsCSS},
 	} {
-		mux.HandleFunc("GET "+asset.path, localDiagnostics(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("GET "+asset.path, guard(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", asset.contentType)
 			_, _ = fmt.Fprint(w, asset.body)
 		}))
 	}
-	mux.HandleFunc("GET /diagnostics/logs", localDiagnostics(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /diagnostics/logs", guard(func(w http.ResponseWriter, r *http.Request) {
 		after := int64(0)
 		if r.URL.Query().Get("run") == logs.run {
 			if value := r.URL.Query().Get("after"); value != "" {
@@ -143,7 +144,8 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 		body, _ := json.Marshal(snapshot)
 		_, _ = w.Write(body)
 	}))
-	mux.HandleFunc("GET /diagnostics/download", localDiagnostics(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /diagnostics/logs/{id}", guard(logs.packetDetails))
+	mux.HandleFunc("GET /diagnostics/download", guard(func(w http.ResponseWriter, r *http.Request) {
 		snapshot := logs.snapshot(0)
 		state, _ := json.Marshal(status())
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

@@ -1,10 +1,11 @@
 FROM golang:1.27.3 AS build
 
+ARG QUASAR_VERSION=v0.8.2
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/quasar-bridge ./cmd/quasar-bridge
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X quasarbridge/internal/update.Version=${QUASAR_VERSION}" -o /out/quasar-bridge ./cmd/quasar-bridge
 
 FROM debian:bookworm-slim
 

@@ -12,17 +12,17 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	application "github.com/freequasar/quasar-go-genproto/proto/alice/library/client/protos"
-	subscription "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common/subscription_state"
-	device "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
-	environment "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/environment_state"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	update "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/capability_update_state"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	endpoint "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint"
-	alicepro "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice_pro"
-	brick "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/brick"
+	application "github.com/skrashevich/quasar-go-genproto/proto/alice/library/client/protos"
+	subscription "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common/subscription_state"
+	device "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
+	environment "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/common/environment_state"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	update "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/capability_update_state"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	endpoint "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint"
+	alicepro "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice_pro"
+	brick "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/brick"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -135,8 +135,11 @@ func TestSubscriptionMonitorClassifiesExplicitBrickState(t *testing.T) {
 		{"blocked_subscription", &brick.TBrickCapability_TState{SubscriptionMode: true, BrickStatus: brick.TBrickCapability_Brick, SubscriptionStatus: brick.TBrickCapability_SubscriptionDisabled}, "blocked_subscription"},
 		{"blocked_no_payment_evidence", &brick.TBrickCapability_TState{BrickStatus: brick.TBrickCapability_Brick}, "blocked"},
 		{"ttl_is_not_nonpayment", &brick.TBrickCapability_TState{SubscriptionMode: true, BrickStatus: brick.TBrickCapability_BrickByTTL}, "blocked_by_ttl"},
+		{"stolen_retail", &brick.TBrickCapability_TState{BrickStatus: brick.TBrickCapability_BrickStolen}, "blocked_stolen"},
+		{"stolen_is_not_nonpayment", &brick.TBrickCapability_TState{SubscriptionMode: true, BrickStatus: brick.TBrickCapability_BrickStolen, SubscriptionStatus: brick.TBrickCapability_SubscriptionDisabled}, "blocked_stolen"},
 		{"disabled_alone_is_not_a_lock", &brick.TBrickCapability_TState{SubscriptionMode: true, SubscriptionStatus: brick.TBrickCapability_SubscriptionDisabled}, "subscription_unknown"},
 		{"future_enum", &brick.TBrickCapability_TState{SubscriptionMode: true, BrickStatus: 99}, "subscription_unknown"},
+		{"future_enum_retail", &brick.TBrickCapability_TState{BrickStatus: 99}, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var m SubscriptionMonitor
@@ -147,6 +150,13 @@ func TestSubscriptionMonitorClassifiesExplicitBrickState(t *testing.T) {
 			got := m.Snapshot()
 			if len(got) != 1 || len(got[0].Endpoints) != 1 || got[0].Endpoints[0].Status != tc.want {
 				t.Fatalf("snapshot=%+v", got)
+			}
+			data, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(data, []byte("secret-status-url")) || bytes.Contains(data, []byte("private-disabled-reason")) {
+				t.Fatalf("private data in health: %s", data)
 			}
 		})
 	}
@@ -442,6 +452,46 @@ func TestSubscriptionMonitorAliceProUpdatesAreScopedAndExplicit(t *testing.T) {
 
 func subscriptionDevice(appID, stateID string, status subscription.TSubscriptionState_ESubscriptionType) *environment.TEnvironmentDeviceInfo {
 	return &environment.TEnvironmentDeviceInfo{Application: &application.TClientInfoProto{DeviceId: new(appID)}, OneOfStates: &environment.TEnvironmentDeviceInfo_SpeakerDeviceState{SpeakerDeviceState: &device.TDeviceState{DeviceId: new(stateID), DeviceSubscriptionState: &subscription.TSubscriptionState{Subscription: status}}}}
+}
+
+func TestPanelSpeakerInfoFollowsConnectedRequester(t *testing.T) {
+	var m SubscriptionMonitor
+	s := m.NewSession(nil, nil, nil)
+	ep := func(id, serial string) *endpoint.TEndpoint {
+		return &endpoint.TEndpoint{Id: id, Meta: &endpoint.TEndpoint_TMeta{DeviceInfo: &endpoint.TEndpoint_TDeviceInfo{
+			Model: "yandexmidi", SwVersion: "1.2.3", SerialNumber: serial,
+		}}}
+	}
+	env := &environment.TEnvironmentState{Endpoints: []*endpoint.TEndpoint{ep("other", "foreign"), ep("local", "demo-serial")}}
+	send := func(id string, env *environment.TEnvironmentState) {
+		t.Helper()
+		frame := subscriptionRequest(t, &device.TDeviceState{DeviceId: new(id)}, id, env, true)
+		if err := s.Client(t.Context(), websocket.MessageBinary, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("local", env)
+	send("local", nil)
+	if got := m.Speaker(); got != (SpeakerInfo{Model: "yandexmidi", FirmwareVersion: "1.2.3", SerialNumber: "demo-serial"}) {
+		t.Fatalf("wrong requester: %+v", got)
+	}
+	health, err := json.Marshal(m.Snapshot())
+	if err != nil || bytes.Contains(health, []byte("demo-serial")) {
+		t.Fatal("serial number in public health response")
+	}
+	second := m.NewSession(nil, nil, nil)
+	if m.Speaker() != (SpeakerInfo{}) {
+		t.Fatal("ambiguous station displayed")
+	}
+	second.Close()
+	send("new", env)
+	if m.Speaker() != (SpeakerInfo{}) {
+		t.Fatal("inherited a different speaker's details")
+	}
+	s.Close()
+	if m.Speaker() != (SpeakerInfo{}) {
+		t.Fatal("closed speaker displayed")
+	}
 }
 
 func subscriptionRequest(t *testing.T, ds *device.TDeviceState, appID string, env *environment.TEnvironmentState, raw bool) []byte {
